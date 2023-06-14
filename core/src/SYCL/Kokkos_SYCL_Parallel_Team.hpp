@@ -406,16 +406,17 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
       const size_t scratch_size[2] = {m_scratch_size[0], m_scratch_size[1]};
       sycl::device_ptr<char> const global_scratch_ptr = m_global_scratch_ptr;
 
-      auto lambda = [=](sycl::nd_item<2> item) {
+      auto lambda = [=](sycl::nd_item<3> item) {
         const member_type team_member(
             team_scratch_memory_L0.get_pointer(), shmem_begin, scratch_size[0],
-            global_scratch_ptr + item.get_group(1) * scratch_size[1],
+            global_scratch_ptr + item.get_group(2) * scratch_size[1],
             scratch_size[1], item);
         if constexpr (std::is_void<work_tag>::value)
           functor_wrapper.get_functor()(team_member);
         else
           functor_wrapper.get_functor()(work_tag(), team_member);
       };
+
 
       static sycl::kernel kernel = [&] {
         sycl::kernel_id functor_kernel_id =
@@ -436,9 +437,9 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
 
       cgh.depends_on(memcpy_event);
       cgh.parallel_for(
-          sycl::nd_range<2>(
-              sycl::range<2>(m_team_size, m_league_size * final_vector_size),
-              sycl::range<2>(m_team_size, final_vector_size)),
+          sycl::nd_range<3>(
+              sycl::range<3>(1, m_team_size, m_league_size * final_vector_size),
+              sycl::range<3>(1, m_team_size, final_vector_size)),
           lambda);
     });
     q.ext_oneapi_submit_barrier(std::vector<sycl::event>{parallel_for_event});
@@ -597,8 +598,8 @@ class ParallelReduce<CombinedFunctorReducerType,
 
         cgh.depends_on(memcpy_event);
         cgh.parallel_for(
-            sycl::nd_range<2>(sycl::range<2>(1, 1), sycl::range<2>(1, 1)),
-            [=](sycl::nd_item<2> item) {
+            sycl::nd_range<3>(sycl::range<3>(1, 1, 1), sycl::range<3>(1, 1, 1)),
+            [=](sycl::nd_item<3> item) {
               const CombinedFunctorReducerType& functor_reducer =
                   functor_reducer_wrapper.get_functor();
               const FunctorType& functor = functor_reducer.get_functor();
@@ -648,11 +649,11 @@ class ParallelReduce<CombinedFunctorReducerType,
                 sycl::device_ptr<value_type> results_ptr) {
               sycl::global_ptr<value_type> device_accessible_result_ptr =
                   m_result_ptr_device_accessible ? m_result_ptr : nullptr;
-              auto lambda = [=](sycl::nd_item<2> item) {
+              auto lambda = [=](sycl::nd_item<3> item) {
                 auto n_wgroups =
-                    item.get_group_range()[0] * item.get_group_range()[1];
+                    item.get_group_range()[0] * item.get_group_range()[1] * item.get_group_range()[2];
                 auto wgroup_size =
-                    item.get_local_range()[0] * item.get_local_range()[1];
+                    item.get_local_range()[0] * item.get_local_range()[1] * item.get_local_range()[2];
                 auto size = n_wgroups * wgroup_size;
 
                 auto& num_teams_done = reinterpret_cast<unsigned int&>(
@@ -669,7 +670,7 @@ class ParallelReduce<CombinedFunctorReducerType,
                   const member_type team_member(
                       team_scratch_memory_L0.get_pointer(), shmem_begin,
                       scratch_size[0],
-                      global_scratch_ptr + item.get_group(1) * scratch_size[1],
+                      global_scratch_ptr + item.get_group(2) * scratch_size[1],
                       scratch_size[1], item);
                   if constexpr (std::is_void_v<WorkTag>)
                     functor(team_member, update);
@@ -682,7 +683,8 @@ class ParallelReduce<CombinedFunctorReducerType,
                       device_accessible_result_ptr, value_count, reducer, false,
                       std::min<std::size_t>(size,
                                             item.get_local_range()[0] *
-                                                item.get_local_range()[1]));
+                                            item.get_local_range()[1] *
+                                            item.get_local_range()[2]));
 
                   if (local_id == 0) {
                     sycl::atomic_ref<unsigned, sycl::memory_order::relaxed,
@@ -710,7 +712,7 @@ class ParallelReduce<CombinedFunctorReducerType,
                         device_accessible_result_ptr, value_count, reducer,
                         true,
                         std::min(n_wgroups, item.get_local_range()[0] *
-                                                item.get_local_range()[1]));
+                                 item.get_local_range()[1] * item.get_local_range()[2]));
                   }
                 } else {
                   value_type local_value;
@@ -718,7 +720,7 @@ class ParallelReduce<CombinedFunctorReducerType,
                   const member_type team_member(
                       team_scratch_memory_L0.get_pointer(), shmem_begin,
                       scratch_size[0],
-                      global_scratch_ptr + item.get_group(1) * scratch_size[1],
+                      global_scratch_ptr + item.get_group(2) * scratch_size[1],
                       scratch_size[1], item);
                   if constexpr (std::is_void_v<WorkTag>)
                     functor(team_member, update);
@@ -730,7 +732,8 @@ class ParallelReduce<CombinedFunctorReducerType,
                       device_accessible_result_ptr, reducer, false,
                       std::min<std::size_t>(size,
                                             item.get_local_range()[0] *
-                                                item.get_local_range()[1]));
+                                            item.get_local_range()[1] *
+                                            item.get_local_range()[2]));
 
                   if (local_id == 0) {
                     sycl::atomic_ref<unsigned, sycl::memory_order::relaxed,
@@ -755,7 +758,7 @@ class ParallelReduce<CombinedFunctorReducerType,
                         item, local_mem, local_value, results_ptr,
                         device_accessible_result_ptr, reducer, true,
                         std::min(n_wgroups, item.get_local_range()[0] *
-                                                item.get_local_range()[1]));
+                                 item.get_local_range()[1] * item.get_local_range()[2]));
                   }
                 }
               };
@@ -800,10 +803,11 @@ class ParallelReduce<CombinedFunctorReducerType,
         cgh.depends_on(memcpy_event);
 
         cgh.parallel_for(
-            sycl::nd_range<2>(
-                sycl::range<2>(m_team_size, m_league_size * m_vector_size),
-                sycl::range<2>(m_team_size, m_vector_size)),
+            sycl::nd_range<3>(
+                sycl::range<3>(1, m_team_size, m_league_size * m_vector_size),
+                sycl::range<3>(1, m_team_size, m_vector_size)),
             reduction_lambda);
+
       });
       last_reduction_event       = q.ext_oneapi_submit_barrier(
           std::vector<sycl::event>{parallel_reduce_event});

@@ -41,7 +41,7 @@ class SYCLTeamMember {
   mutable sycl::local_ptr<void> m_team_reduce;
   scratch_memory_space m_team_shared;
   int m_team_reduce_size;
-  sycl::nd_item<2> m_item;
+  sycl::nd_item<3> m_item;
 
  public:
   KOKKOS_INLINE_FUNCTION
@@ -65,19 +65,19 @@ class SYCLTeamMember {
     return m_item.get_group_linear_id();
   }
   KOKKOS_INLINE_FUNCTION int league_size() const {
-    return m_item.get_group_range(1);
+    return m_item.get_group_range(2);
   }
   KOKKOS_INLINE_FUNCTION int team_rank() const {
-    return m_item.get_local_id(0);
+    return m_item.get_local_id(1);
   }
   KOKKOS_INLINE_FUNCTION int team_size() const {
-    return m_item.get_local_range(0);
+    return m_item.get_local_range(1);
   }
   KOKKOS_INLINE_FUNCTION void team_barrier() const {
     sycl::group_barrier(m_item.get_group());
   }
 
-  KOKKOS_INLINE_FUNCTION const sycl::nd_item<2>& item() const { return m_item; }
+  KOKKOS_INLINE_FUNCTION const sycl::nd_item<3>& item() const { return m_item; }
 
   //--------------------------------------------------------------------------
 
@@ -86,7 +86,7 @@ class SYCLTeamMember {
       std::enable_if_t<std::is_trivially_copyable_v<ValueType>>
       team_broadcast(ValueType& val, const int thread_id) const {
     val = sycl::group_broadcast(m_item.get_group(), val,
-                                sycl::id<2>(thread_id, 0));
+                                sycl::id<3>(0, 0, thread_id));
   }
 
   // FIXME_SYCL remove/adapt this overload once the Intel oneAPI implementation
@@ -97,8 +97,8 @@ class SYCLTeamMember {
       team_broadcast(ValueType& val, const int thread_id) const {
     // Wait for shared data write until all threads arrive here
     sycl::group_barrier(m_item.get_group());
-    if (m_item.get_local_id(1) == 0 &&
-        static_cast<int>(m_item.get_local_id(0)) == thread_id) {
+    if (static_cast<int>(m_item.get_local_id(2)) == 0u &&
+        static_cast<int>(m_item.get_local_id(1)) == thread_id) {
       *static_cast<sycl::local_ptr<ValueType>>(m_team_reduce) = val;
     }
     // Wait for shared data read until root thread writes
@@ -341,7 +341,7 @@ class SYCLTeamMember {
                  const std::size_t shared_size,
                  sycl::device_ptr<void> scratch_level_1_ptr,
                  const std::size_t scratch_level_1_size,
-                 const sycl::nd_item<2> item)
+                 const sycl::nd_item<3> item)
       : m_team_reduce(shared),
         m_team_shared(static_cast<sycl::local_ptr<char>>(shared) + shared_begin,
                       shared_size, scratch_level_1_ptr, scratch_level_1_size),
@@ -500,9 +500,9 @@ KOKKOS_INLINE_FUNCTION void parallel_for(
         loop_boundaries,
     const Closure& closure) {
   for (iType i = loop_boundaries.start +
-                 loop_boundaries.member.item().get_local_id(0);
+                 loop_boundaries.member.item().get_local_id(1);
        i < loop_boundaries.end;
-       i += loop_boundaries.member.item().get_local_range(0))
+       i += loop_boundaries.member.item().get_local_range(1))
     closure(i);
 }
 
@@ -525,9 +525,9 @@ parallel_reduce(const Impl::TeamThreadRangeBoundariesStruct<
   reducer.init(value);
 
   for (iType i = loop_boundaries.start +
-                 loop_boundaries.member.item().get_local_id(0);
+                 loop_boundaries.member.item().get_local_id(1);
        i < loop_boundaries.end;
-       i += loop_boundaries.member.item().get_local_range(0)) {
+       i += loop_boundaries.member.item().get_local_range(1)) {
     closure(i, value);
   }
 
@@ -553,9 +553,9 @@ parallel_reduce(const Impl::TeamThreadRangeBoundariesStruct<
   reducer.init(reducer.reference());
 
   for (iType i = loop_boundaries.start +
-                 loop_boundaries.member.item().get_local_id(0);
+                 loop_boundaries.member.item().get_local_id(1);
        i < loop_boundaries.end;
-       i += loop_boundaries.member.item().get_local_range(0)) {
+       i += loop_boundaries.member.item().get_local_range(1)) {
     closure(i, val);
   }
 
@@ -614,11 +614,11 @@ KOKKOS_INLINE_FUNCTION void parallel_for(
     const Impl::TeamVectorRangeBoundariesStruct<iType, Impl::SYCLTeamMember>&
         loop_boundaries,
     const Closure& closure) {
-  const iType tidx0 = loop_boundaries.member.item().get_local_id(0);
-  const iType tidx1 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx0 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx1 = loop_boundaries.member.item().get_local_id(2);
 
-  const iType grange0 = loop_boundaries.member.item().get_local_range(0);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange0 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx0 * grange1 + tidx1;
        i < loop_boundaries.end; i += grange0 * grange1)
@@ -633,11 +633,11 @@ parallel_reduce(const Impl::TeamVectorRangeBoundariesStruct<
   typename ReducerType::value_type value;
   reducer.init(value);
 
-  const iType tidx0 = loop_boundaries.member.item().get_local_id(0);
-  const iType tidx1 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx0 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx1 = loop_boundaries.member.item().get_local_id(2);
 
-  const iType grange0 = loop_boundaries.member.item().get_local_range(0);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange0 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx0 * grange1 + tidx1;
        i < loop_boundaries.end; i += grange0 * grange1)
@@ -657,11 +657,11 @@ parallel_reduce(const Impl::TeamVectorRangeBoundariesStruct<
 
   reducer.init(reducer.reference());
 
-  const iType tidx0 = loop_boundaries.member.item().get_local_id(0);
-  const iType tidx1 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx0 = loop_boundaries.member.item().get_local_id(1);
+  const iType tidx1 = loop_boundaries.member.item().get_local_id(2);
 
-  const iType grange0 = loop_boundaries.member.item().get_local_range(0);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange0 = loop_boundaries.member.item().get_local_range(1);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx0 * grange1 + tidx1;
        i < loop_boundaries.end; i += grange0 * grange1)
@@ -685,8 +685,8 @@ KOKKOS_INLINE_FUNCTION void parallel_for(
     const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::SYCLTeamMember>&
         loop_boundaries,
     const Closure& closure) {
-  const iType tidx1   = loop_boundaries.member.item().get_local_id(1);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType tidx1   = loop_boundaries.member.item().get_local_id(2);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx1; i < loop_boundaries.end;
        i += grange1)
@@ -721,8 +721,8 @@ parallel_reduce(Impl::ThreadVectorRangeBoundariesStruct<
                 Closure const& closure, ReducerType const& reducer) {
   reducer.init(reducer.reference());
 
-  const iType tidx1   = loop_boundaries.member.item().get_local_id(1);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType tidx1   = loop_boundaries.member.item().get_local_id(2);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx1; i < loop_boundaries.end;
        i += grange1)
@@ -749,8 +749,8 @@ parallel_reduce(Impl::ThreadVectorRangeBoundariesStruct<
                 Closure const& closure, ValueType& result) {
   result = ValueType();
 
-  const iType tidx1 = loop_boundaries.member.item().get_local_id(1);
-  const int grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType tidx1 = loop_boundaries.member.item().get_local_id(2);
+  const int grange1 = loop_boundaries.member.item().get_local_range(2);
 
   for (iType i = loop_boundaries.start + tidx1; i < loop_boundaries.end;
        i += grange1)
@@ -791,8 +791,8 @@ parallel_scan(const Impl::ThreadVectorRangeBoundariesStruct<
   //     ( end % grange1 ) == ( end & ( grange1 - 1 ) )
   //   1 <= grange1 <= sub_group size
 
-  const iType tidx1   = loop_boundaries.member.item().get_local_id(1);
-  const iType grange1 = loop_boundaries.member.item().get_local_range(1);
+  const iType tidx1   = loop_boundaries.member.item().get_local_id(2);
+  const iType grange1 = loop_boundaries.member.item().get_local_range(2);
 
   const int mask          = grange1 - 1;
   const int rem           = loop_boundaries.end & mask;  // == end % grange1
@@ -859,7 +859,7 @@ template <class FunctorType>
 KOKKOS_INLINE_FUNCTION void single(
     const Impl::VectorSingleStruct<Impl::SYCLTeamMember>& single_struct,
     const FunctorType& lambda) {
-  if (single_struct.team_member.item().get_local_id(1) == 0) lambda();
+  if (single_struct.team_member.item().get_local_id(2) == 0) lambda();
 }
 
 template <class FunctorType>
@@ -873,10 +873,10 @@ template <class FunctorType, class ValueType>
 KOKKOS_INLINE_FUNCTION void single(
     const Impl::VectorSingleStruct<Impl::SYCLTeamMember>& single_struct,
     const FunctorType& lambda, ValueType& val) {
-  const sycl::nd_item<2> item = single_struct.team_member.item();
-  const auto grange1          = item.get_local_range(1);
+  const sycl::nd_item<3> item = single_struct.team_member.item();
+  const auto grange1          = item.get_local_range(2);
   const auto sg               = item.get_sub_group();
-  if (item.get_local_id(1) == 0) lambda(val);
+  if (item.get_local_id(2) == 0) lambda(val);
   val = sg.shuffle(val, (sg.get_local_id() / grange1) * grange1);
 }
 
